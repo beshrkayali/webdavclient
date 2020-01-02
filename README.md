@@ -7,7 +7,7 @@ operations to communicate with a WebDAV server using Nim.
 Example usage:
 
 ```
-import webdavclient, asyncdispatch
+import webdavclient, asyncdispatch, strtabs
 
 let wd = newAsyncWebDAV(
   address="https://wd.example.com",
@@ -19,7 +19,7 @@ let wd = newAsyncWebDAV(
 # List files
 let t = waitFor wd.ls(
   "files/",
-  props=@["d:getlastmodified", "d:getetag", "d:getcontenttype", "d:resourcetype", "d:getcontentlength"],
+  props=@["d:getlastmodified", "d:getetag", "d:getcontenttype", "d:resourcetype", "d:getcontentlength", "oc:permissions",],
   namespaces={"xmlns:oc": "http://owncloud.org/ns"}.newStringTable,
   depth=2
 )
