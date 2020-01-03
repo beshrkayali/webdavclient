@@ -20,17 +20,20 @@ proc operationFailed*(msg: string) {.noreturn.} =
 
 
 type AsyncWebDAV* = ref object of RootObj
-    client*: AsyncHttpClient
-    path*: string
-    address*: string
-    username*: string
-    password*: string
+  client*: AsyncHttpClient
+  path*: string
+  address*: string
+  username*: string
+  password*: string
 
-proc newAsyncWebDAV*(address: string, username: string, password: string, path: string): AsyncWebDAV =
+proc newAsyncWebDAV*(address: string, username: string, password: string,
+    path: string): AsyncWebDAV =
   let fulladdr = parseUri(address) / path
   let client = newAsyncHttpClient()
 
-  client.headers["Authorization"] = "Basic " & base64.encode(username & ":" & password)
+  client.headers["Authorization"] = "Basic " & base64.encode(
+    username & ":" & password
+  )
 
   AsyncWebDAV(
     client: client,
@@ -60,14 +63,15 @@ proc ls*(
   for p in props:
     let pNode = newElement(p)
     propNode.add(pNode)
-    
+
   var reqXml = newElement("d:propfind")
   reqXml.attrs = nsAttrs
   reqXml.add(propNode)
 
   let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" & $reqXml
 
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "PROPFIND", body=reqBody)
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "PROPFIND", body = reqBody)
 
   if resp.code != HttpCode(207):
     let error = parseXml(await resp.body).child("s:message").innerText
@@ -102,7 +106,8 @@ proc download*(
   path: string,
   destination: string,
 ) {.async.} =
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "GET")
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "GET")
 
   if resp.code != HttpCode(200):
     let error = parseXml(await resp.body).child("s:message").innerText
@@ -124,10 +129,11 @@ proc upload*(
 
   if isNil(strm):
     operationFailed("File \"" & filepath & "\" not found")
-    
+
   let body = strm.readAll()
 
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "PUT", body=body)
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "PUT", body = body)
 
   if resp.code != HttpCode(201):
     let error = parseXml(await resp.body).child("s:message").innerText
@@ -138,7 +144,8 @@ proc mkdir*(
   wd: AsyncWebDAV,
   path: string,
 ) {.async.} =
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "MKCOL")
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "MKCOL")
 
   if resp.code != HttpCode(201):
     let error = parseXml(await resp.body).child("s:message").innerText
@@ -149,7 +156,8 @@ proc rm*(
   wd: AsyncWebDAV,
   path: string,
 ) {.async.} =
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "DELETE")
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "DELETE")
 
   if resp.code != HttpCode(204):
     let error = parseXml(await resp.body).child("s:message").innerText
@@ -163,8 +171,9 @@ proc mv*(
 ) {.async.} =
 
   wd.client.headers["Destination"] = $(parseUri(wd.address) / destination)
-  
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "MOVE")
+
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "MOVE")
 
   if resp.code != HttpCode(204):
     let error = parseXml(await resp.body).child("s:message").innerText
@@ -178,8 +187,9 @@ proc cp*(
 ) {.async.} =
 
   wd.client.headers["Destination"] = $(parseUri(wd.address) / destination)
-  
-  let resp = await wd.client.request($(parseUri(wd.address) / path), httpMethod = "COPY")
+
+  let resp = await wd.client.request($(parseUri(wd.address) / path),
+      httpMethod = "COPY")
 
   if resp.code != HttpCode(204):
     let error = parseXml(await resp.body).child("s:message").innerText
