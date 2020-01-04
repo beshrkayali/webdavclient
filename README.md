@@ -9,7 +9,7 @@ operations to communicate with a WebDAV server using Nim.
 
 Example usage:
 
-```
+```nim
 import webdavclient, asyncdispatch, tables, options
 
 # Only Basic auth is currently supported. Make sure you're
