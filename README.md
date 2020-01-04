@@ -24,7 +24,7 @@ let t = waitFor wd.ls(
   depth=2
 )
 
-for url, props in t.pairs:
+for url, prop in t.pairs:
   echo(url)
   echo(prop)
   echo("---")

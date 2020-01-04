@@ -1,6 +1,6 @@
 import options
 from sequtils import zip
-from strutils import replace
+from strutils import replace, split
 import strtabs, tables, base64, xmlparser, xmltree, streams
 import uri, asyncdispatch, httpClient
 
@@ -13,6 +13,9 @@ type
   header = tuple
     name: string
     value: string
+  namespace = tuple
+    name: string
+    url: string
 
 type
   Depth* = enum
@@ -83,26 +86,30 @@ proc request(
 proc ls*(
   wd: AsyncWebDAV,
   path: string,
-  props: seq[string],
-  namespaces: StringTableRef,
+  props: Option[seq[string]] = none(seq[string]),
+  namespaces: Option[seq[namespace]] = none(seq[namespace]),
   depth: Depth = INF,
 ): Future[Table[string, filesTable]] {.async.} =
 
-  var propNode = newElement("D:prop")
-  var nsAttrs = {"xmlns:D": "DAV:"}.toXmlAttributes
+  var propNode = newElement("prop")
+  var nsAttrs = {"xmlns": "DAV:"}.toXmlAttributes
 
-  for ns, url in pairs(namespaces):
-    nsAttrs["xmlns:" & ns] = url
+  if isSome(namespaces):
+    for (ns, url) in namespaces.get:
+      nsAttrs["xmlns:" & ns] = url
 
-  for p in props:
-    let pNode = newElement(p)
-    propNode.add(pNode)
+  var reqBody = ""
 
-  var reqXml = newElement("D:propfind")
-  reqXml.attrs = nsAttrs
-  reqXml.add(propNode)
+  if isSome(props):
+    for p in props.get:
+      let pNode = newElement(p)
+      propNode.add(pNode)
 
-  let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" & $reqXml
+    var reqXml = newElement("propfind")
+    reqXml.attrs = nsAttrs
+    reqXml.add(propNode)
+
+    reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $reqXml
 
   let resp = await wd.request(
     path,
@@ -112,7 +119,7 @@ proc ls*(
   )
 
   if resp.code != HttpCode(207):
-    operationFailed(await resp.body)
+    operationFailed("Got unexpected response from server:\n" & await resp.body)
 
   let body = await resp.body
   let node: XmlNode = parseXml(body)
@@ -120,13 +127,15 @@ proc ls*(
   var hrefs = newSeq[string]()
   var propsTables = newSeq[filesTable]()
 
+  let NS = node.tag.split(":")[0] & ":"
+
   for item in node:
-    let href = item.child("D:href")
-    let props = item.child("D:propstat")
+    let href = item.child(NS & "href")
+    let props = item.child(NS & "propstat")
     hrefs.add(href.innerText.replace(wd.path, ""))
 
     var propsTable: filesTable
-    for prop in props.findAll("D:prop"):
+    for prop in props.findAll(NS & "prop"):
       for p in prop:
         propsTable[p.tag] = p.innerText
 
@@ -212,6 +221,7 @@ proc mv*(
   path: string,
   destination: string,
   overwrite: bool = false,
+  depth: Depth = INF,
 ) {.async.} =
   var overwriteValue = "F"
   if overwrite:
@@ -222,7 +232,8 @@ proc mv*(
     httpMethod = "MOVE",
     headers = some(
       @[("Destination", $(parseUri(wd.address) / destination)),
-        ("Overwrite", overwriteValue)]
+        ("Overwrite", overwriteValue),
+        ("Depth", $depth)]
     )
   )
 
@@ -234,7 +245,8 @@ proc cp*(
   wd: AsyncWebDAV,
   path: string,
   destination: string,
-  overwrite: bool = false
+  overwrite: bool = false,
+  depth: Depth = INF,
 ) {.async.} =
   var overwriteValue = "F"
   if overwrite:
@@ -245,7 +257,8 @@ proc cp*(
     httpMethod = "COPY",
     headers = some(
       @[("Destination", $(parseUri(wd.address) / destination)),
-        ("Overwrite", overwriteValue)]
+        ("Overwrite", overwriteValue),
+        ("Depth", $depth)]
     )
   )
 
