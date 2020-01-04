@@ -1,6 +1,6 @@
 ### WebDAV Client for Nim
 
-![](https://github.com/beshrkayali/webdavclient/workflows/CI/badge.svg)
+[![](https://github.com/beshrkayali/webdavclient/workflows/CI/badge.svg)](https://github.com/beshrkayali/webdavclient/actions?query=workflow%3ACI)
 
 
 This is an implementation for some of the basic
