@@ -1,5 +1,8 @@
 ### WebDAV Client for Nim
 
+![](https://github.com/beshrkayali/webdavclient/workflows/CI/badge.svg)
+
+
 This is an implementation for some of the basic
 operations to communicate with a WebDAV server using Nim.
 
@@ -7,34 +10,47 @@ operations to communicate with a WebDAV server using Nim.
 Example usage:
 
 ```
-import webdavclient, asyncdispatch, strtabs
+import webdavclient, asyncdispatch, tables, options
+
+# Only Basic auth is currently supported. Make sure you're
+# connecting over ssl
 
 let wd = newAsyncWebDAV(
-  address="https://wd.example.com",
-  username="",
-  password="",
-  path="/remote.php/dav/"
+  address="https://dav.example.com",
+  username="username",
+  password="password"
 )
 
 # List files
+# Default webdav properties don't require a namespace
 let t = waitFor wd.ls(
-  "files/",
-  props=@["d:getlastmodified", "d:getetag", "d:getcontenttype", "d:resourcetype", "d:getcontentlength", "oc:permissions",],
-  namespaces={"xmlns:oc": "http://owncloud.org/ns"}.newStringTable,
-  depth=2
+  "/",
+  props=some(@[
+    "getcontentlength",
+    "getlastmodified",
+	"creationdate",
+	"getcontenttype",
+	"nc:has-preview",
+	"oc:favorite",
+  ]),
+  namespaces=some(@[
+    ("oc", "http://owncloud.org/ns"),
+    ("nc", "http://nextcloud.org/ns")
+  ]),
+  depth=ONE
 )
 
 for url, prop in t.pairs:
   echo(url)
-  echo(prop)
+  for pname, pval in v.pairs:
+    echo(" - " , pname, ": ", pval)
   echo("---")
 
-
 # Downlaod a file
-waitFor wd.download("files/example.md", "/home/me/example.md")
+waitFor wd.download(path="files/example.md", destination="/home/me/example.md")
 
 # Upload a file
-waitFor wd.upload("files/example.md", "/home/me/example.md")
+waitFor wd.upload(filepath="files/example.md", destination="/home/me/example.md")
 
 # Delete a file
 waitFor wd.rm("files/example.md")
@@ -43,8 +59,8 @@ waitFor wd.rm("files/example.md")
 waitFor wd.mkdir("files/new/")
 
 # Move a file
-waitFor wd.mv("files/example.md", "files/new/example.md")
+waitFor wd.mv(path="files/example.md", destination="files/new/example.md", overwrite=true)
 
 # Copy a file
-waitFor wd.cp("files/new/example.md", "files/example.md")
+waitFor wd.cp(path="files/new/example.md", destination="files/example.md", overwrite=true)
 ```
