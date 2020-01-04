@@ -2,13 +2,14 @@
 
 import options
 from sequtils import zip
-from strutils import replace, split
+from strutils import replace, split, parseInt
 import strtabs, tables, base64, xmlparser, xmltree, streams
 import uri, asyncdispatch, httpClient
 
 
 type
   OperationFailed* = object of Exception
+    code: HttpCode
 
 type
   filesTable = Table[string, string]
@@ -26,8 +27,16 @@ type
     INF = "infinity"
 
 
-proc operationFailed*(msg: string) {.noreturn.} =
+proc operationFailed(msg: string, code: HttpCode) {.noreturn.} =
   ## raises an OperationFailed exception with message `msg`.
+  var e: ref OperationFailed
+  new(e)
+  e.msg = msg
+  e.code = code
+  raise e
+
+
+proc operationFailed(msg: string) {.noreturn.} =
   var e: ref OperationFailed
   new(e)
   e.msg = msg
@@ -42,8 +51,12 @@ type AsyncWebDAV* = ref object of RootObj
   password: string
 
 
-proc newAsyncWebDAV*(address: string, username: string, password: string,
-                     path: string = ""): AsyncWebDAV =
+proc newAsyncWebDAV*(
+  address: string,
+  username: string,
+  password: string,
+  path: string = ""
+): AsyncWebDAV =
   ## Create an async webdav client. Only Basic auth is supported for now.
   let fulladdr = parseUri(address) / path
   let client = newAsyncHttpClient()
@@ -133,7 +146,9 @@ proc ls*(
   )
 
   if resp.code != HttpCode(207):
-    operationFailed("Got unexpected response from server:\n" & await resp.body)
+    operationFailed(
+      "Got unexpected response from server:\n" & await resp.body, resp.code
+    )
 
   let body = await resp.body
   let node: XmlNode = parseXml(body)
@@ -172,7 +187,7 @@ proc download*(
   )
 
   if resp.code != HttpCode(200):
-    operationFailed(await resp.body)
+    operationFailed(await resp.body, resp.code)
 
   var output = newFileStream(destination, fmWrite)
 
@@ -200,7 +215,7 @@ proc upload*(
   )
 
   if resp.code != HttpCode(201):
-    operationFailed(await resp.body)
+    operationFailed(await resp.body, resp.code)
 
 
 proc mkdir*(
@@ -213,7 +228,7 @@ proc mkdir*(
   )
 
   if resp.code != HttpCode(201):
-    operationFailed(await resp.body)
+    operationFailed(await resp.body, resp.code)
 
 
 proc rm*(
@@ -228,7 +243,7 @@ proc rm*(
   )
 
   if resp.code != HttpCode(204):
-    operationFailed(await resp.body)
+    operationFailed(await resp.body, resp.code)
 
 
 proc mv*(
@@ -254,7 +269,7 @@ proc mv*(
   )
 
   if resp.code != HttpCode(204) and resp.code != HttpCode(201):
-    operationFailed(await resp.body)
+    operationFailed(await resp.body, resp.code)
 
 
 proc cp*(
@@ -280,4 +295,4 @@ proc cp*(
   )
 
   if resp.code != HttpCode(204) and resp.code != HttpCode(201):
-    operationFailed(await resp.body)
+    operationFailed(await resp.body, resp.code)
