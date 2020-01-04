@@ -1,3 +1,5 @@
+## A WebDAV Client for Nim.
+
 import options
 from sequtils import zip
 from strutils import replace, split
@@ -42,12 +44,9 @@ type AsyncWebDAV* = ref object of RootObj
 
 proc newAsyncWebDAV*(address: string, username: string, password: string,
                      path: string = ""): AsyncWebDAV =
-
+  ## Create an async webdav client. Only Basic auth is supported for now.
   let fulladdr = parseUri(address) / path
   let client = newAsyncHttpClient()
-  # client.headers["Authorization"] = "Basic " & base64.encode(
-  #   username & ":" & password
-  # )
 
   AsyncWebDAV(
     client: client,
@@ -88,9 +87,24 @@ proc ls*(
   path: string,
   props: Option[seq[string]] = none(seq[string]),
   namespaces: Option[seq[namespace]] = none(seq[namespace]),
-  depth: Depth = INF,
+  depth: Depth = ONE,
 ): Future[Table[string, filesTable]] {.async.} =
-
+  ## Returns a table of relative urls (of files and directories)
+  ## and their properties at specified path (or only of the specified
+  ## path if `depth` is set to `ZERO`.
+  ##
+  ## `DAV:` is the default namespace, meaning dav properties
+  ## can be provided directly without a namespace.
+  ## For example:
+  ## ```nim
+  ## wd.ls(
+  ##   "/",
+  ##   some(@["getcontentlength", "getlastmodified"]),
+  ##   depth=ONE
+  ## )
+  ## ```
+  ##
+  ## If no props are provided, no request body will be sent.
   var propNode = newElement("prop")
   var nsAttrs = {"xmlns": "DAV:"}.toXmlAttributes
 
@@ -206,7 +220,8 @@ proc rm*(
   wd: AsyncWebDAV,
   path: string,
 ) {.async.} =
-
+  ## Delete a file or directory. If path is a directory,
+  ## all resources within will be deleted recursively.
   let resp = await wd.request(
     path,
     httpMethod = "DELETE",
@@ -223,6 +238,7 @@ proc mv*(
   overwrite: bool = false,
   depth: Depth = INF,
 ) {.async.} =
+  ## Move a resource from one location to another.
   var overwriteValue = "F"
   if overwrite:
     overwriteValue = "T"
@@ -248,6 +264,7 @@ proc cp*(
   overwrite: bool = false,
   depth: Depth = INF,
 ) {.async.} =
+  ## Copy a resource to another location.
   var overwriteValue = "F"
   if overwrite:
     overwriteValue = "T"
