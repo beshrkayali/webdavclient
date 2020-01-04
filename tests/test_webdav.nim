@@ -5,7 +5,6 @@ when isMainModule:
     address = "http://webdav",
     username = "admin",
     password = "password",
-    path = ""
   )
 
   # Make directory

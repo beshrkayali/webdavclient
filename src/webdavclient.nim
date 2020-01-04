@@ -41,7 +41,7 @@ type AsyncWebDAV* = ref object of RootObj
 
 
 proc newAsyncWebDAV*(address: string, username: string, password: string,
-    path: string): AsyncWebDAV =
+                     path: string = ""): AsyncWebDAV =
 
   let fulladdr = parseUri(address) / path
   let client = newAsyncHttpClient()
