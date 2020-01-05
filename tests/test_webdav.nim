@@ -48,6 +48,15 @@ when isMainModule:
   doAssertRaises(OperationFailed):
     waitFor wd.cp(path = "example.md", destination = "files/example.md")
 
+  # Get possible props
+  let props = waitFor wd.props(
+    "/",
+  )
+
+  assert "supportedlock" in props["/"]
+  assert "lockdiscovery" in props["/"]
+  assert "getcontenttype" in props["/"]
+
   # List
   let t = waitFor wd.ls(
     "/",

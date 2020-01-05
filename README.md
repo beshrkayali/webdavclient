@@ -21,6 +21,15 @@ let wd = newAsyncWebDAV(
   password="password"
 )
 
+# Get props (propname request)
+let possible_props = waitFor wd.props(
+  "/",
+  depth=ZERO
+)
+
+for url, props in possible_props["/"]:
+  echo(url, props)
+
 # List files
 # Default webdav properties don't require a namespace
 let t = waitFor wd.ls(

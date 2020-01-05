@@ -95,6 +95,10 @@ proc request(
   )
 
 
+proc getDefaultXmlAttrs(): XmlAttributes =
+  {"xmlns": "DAV:"}.toXmlAttributes
+
+
 proc ls*(
   wd: AsyncWebDAV,
   path: string,
@@ -109,6 +113,7 @@ proc ls*(
   ## `DAV:` is the default namespace, meaning dav properties
   ## can be provided directly without a namespace.
   ## For example:
+  ##
   ## ```nim
   ## wd.ls(
   ##   "/",
@@ -118,8 +123,9 @@ proc ls*(
   ## ```
   ##
   ## If no props are provided, no request body will be sent.
+
   var propNode = newElement("prop")
-  var nsAttrs = {"xmlns": "DAV:"}.toXmlAttributes
+  var nsAttrs = getDefaultXmlAttrs()
 
   if isSome(namespaces):
     for (ns, url) in namespaces.get:
@@ -175,6 +181,59 @@ proc ls*(
     files[href] = props
 
   return files
+
+proc props*(
+  wd: AsyncWebDAV,
+  path: string,
+  namespaces: Option[seq[namespace]] = none(seq[namespace]),
+  depth: Depth = ONE,
+): Future[Table[string, seq[string]]] {.async.} =
+  var reqXml = newElement("propfind")
+
+  var nsAttrs = getDefaultXmlAttrs()
+
+  if isSome(namespaces):
+    for (ns, url) in namespaces.get:
+      nsAttrs["xmlns:" & ns] = url
+
+  reqXml.attrs = nsAttrs
+  reqXml.add(newElement("propname"))
+
+  let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $reqXml
+
+  let resp = await wd.request(
+    path,
+    httpMethod = "PROPFIND",
+    body = reqBody,
+    headers = some(
+      @[("Depth", $depth)]
+    )
+  )
+
+  if resp.code != HttpCode(207):
+    operationFailed(
+      "Got unexpected response from server:\n" & await resp.body, resp.code
+    )
+
+  let body = await resp.body
+  let node: XmlNode = parseXml(body)
+
+  var properties = initTable[string, seq[string]]()
+
+  let NS = node.tag.split(":")[0] & ":"
+
+  for response in node.findAll(NS & "response"):
+    let href = response.child(NS & "href")
+    properties[href.innerText] = @[]
+    let props = response.child(NS & "propstat")
+    for pstat in response:
+      for prop in pstat.findAll(NS & "prop"):
+        for p in prop:
+          let tag = p.tag.replace(NS, "")
+          properties[href.innerText].add(tag)
+
+  return properties
+
 
 proc download*(
   wd: AsyncWebDAV,
