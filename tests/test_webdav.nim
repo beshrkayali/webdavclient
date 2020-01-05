@@ -1,4 +1,4 @@
-import webdavclient, asyncdispatch, tables, options
+import webdavclient, asyncdispatch, tables, options, os, streams
 
 when isMainModule:
   let wd = newAsyncWebDAV(
@@ -22,8 +22,10 @@ when isMainModule:
 
   # File not found
   doAssertRaises(OperationFailed):
-    waitFor wd.upload(filepath = "tests/does_not_exist.md",
-        destination = "files/example.md")
+    waitFor wd.upload(
+      filepath = "tests/does_not_exist.md",
+      destination = "files/example.md"
+    )
 
   # File already exists
   doAssertRaises(OperationFailed):
@@ -31,6 +33,22 @@ when isMainModule:
       filepath = "tests/example.md",
       destination = "files/example.md"
     )
+
+  # Download
+  waitFor wd.download(
+    path="files/example.md",
+    destination="/tmp/example.md"
+  )
+
+  # File exists
+  assert fileExists("/tmp/example.md")
+
+  var fs = newFileStream("/tmp/example.md", fmRead)
+  let content = fs.readAll()
+  assert content == """# Example
+
+This is an example file.
+"""
 
   # Move
   waitFor wd.mv(path = "files/example.md", destination = "example.md")
