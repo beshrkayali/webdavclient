@@ -7,6 +7,8 @@ import strtabs, tables, base64, xmlparser, xmltree, asyncfile, os
 import uri, asyncdispatch, httpClient
 
 
+const REDIRECTS = @[HttpCode(301), HttpCode(302), HttpCode(307), HttpCode(308)]
+
 type
   OperationFailed* = object of Exception
     code: HttpCode
@@ -59,7 +61,7 @@ proc newAsyncWebDAV*(
 ): AsyncWebDAV =
   ## Create an async webdav client. Only Basic auth is supported for now.
   let fulladdr = parseUri(address) / path
-  let client = newAsyncHttpClient()
+  let client = newAsyncHttpClient(maxRedirects = 0)
 
   AsyncWebDAV(
     client: client,
@@ -97,6 +99,14 @@ proc request(
 
 proc getDefaultXmlAttrs(): XmlAttributes =
   {"xmlns": "DAV:"}.toXmlAttributes
+
+
+proc shouldRedirect(resp: AsyncResponse): bool =
+  return resp.code in REDIRECTS and resp.headers.hasKey("location")
+
+
+proc locationHeader(resp: AsyncResponse): string =
+  return resp.headers["location"]
 
 
 proc ls*(
@@ -151,9 +161,19 @@ proc ls*(
     headers = some(@[("Depth", $depth)])
   )
 
+  if resp.shouldRedirect:
+    let newPath = resp.locationHeader().replace(wd.address, "")
+    return await wd.ls(
+      path = newPath,
+      props = props,
+      namespaces = namespaces,
+      depth = depth,
+    )
+
   if resp.code != HttpCode(207):
     operationFailed(
-      "Got unexpected response from server:\n" & await resp.body, resp.code
+      "Got unexpected status " & resp.status & " with response from server:\n" &
+      await resp.body, resp.code
     )
 
   let body = await resp.body
@@ -209,6 +229,14 @@ proc props*(
       @[("Depth", $depth)]
     )
   )
+
+  if resp.shouldRedirect:
+    let newPath = resp.locationHeader().replace(wd.address, "")
+    return await wd.props(
+      path = newPath,
+      namespaces = namespaces,
+      depth = depth,
+    )
 
   if resp.code != HttpCode(207):
     operationFailed(

@@ -36,8 +36,8 @@ when isMainModule:
 
   # Download
   waitFor wd.download(
-    path="files/example.md",
-    destination="/tmp/example.md"
+    path = "files/example.md",
+    destination = "/tmp/example.md"
   )
 
   # File exists
@@ -74,7 +74,7 @@ This is an example file.
   assert "getcontenttype" in props["/"]
 
   # List
-  let t = waitFor wd.ls(
+  let dir1 = waitFor wd.ls(
     "/",
     some(@[
       "getcontentlength",
@@ -85,9 +85,18 @@ This is an example file.
     depth = ONE
   )
 
-  assert t.hasKey("/")
-  assert t.hasKey("/files/")
-  assert t.hasKey("/example.md")
+  assert dir1.hasKey("/")
+  assert dir1.hasKey("/files/")
+  assert dir1.hasKey("/example.md")
+
+  # Follow redirects
+  let dir2 = waitFor wd.ls(
+    "/files", # server will ask to redirect to /files/
+    depth = ONE
+  )
+
+  assert dir2.hasKey("/files/")
+  assert dir2.hasKey("/files/example.md")
 
   # Delete
   waitFor wd.rm("example.md")
