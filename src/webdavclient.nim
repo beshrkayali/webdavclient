@@ -3,7 +3,7 @@
 import options
 from sequtils import zip
 from strutils import replace, split, parseInt
-import strtabs, tables, base64, xmlparser, xmltree, streams
+import strtabs, tables, base64, xmlparser, xmltree, asyncfile, os
 import uri, asyncdispatch, httpClient
 
 
@@ -248,10 +248,10 @@ proc download*(
   if resp.code != HttpCode(200):
     operationFailed(await resp.body, resp.code)
 
-  var output = newFileStream(destination, fmWrite)
+  var output = openAsync(destination, fmWrite)
 
   if not isNil(output):
-    output.write(await resp.body)
+    await output.writeFromStream(resp.bodyStream)
     output.close()
 
 
@@ -260,12 +260,11 @@ proc upload*(
   filepath: string,
   destination: string,
 ) {.async.} =
-  var strm = newFileStream(filepath, fmRead)
-
-  if isNil(strm):
+  if not fileExists(filepath):
     operationFailed("File \"" & filepath & "\" not found")
 
-  let reqBody = strm.readAll()
+  var strm = openAsync(filepath, fmRead)
+  let reqBody = await strm.readAll()
 
   let resp = await wd.request(
     destination,

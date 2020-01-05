@@ -22,10 +22,8 @@ when isMainModule:
 
   # File not found
   doAssertRaises(OperationFailed):
-    waitFor wd.upload(
-      filepath = "tests/does_not_exist.md",
-      destination = "files/example.md"
-    )
+    waitFor wd.upload(filepath = "tests/does_not_exist.md",
+        destination = "files/example.md")
 
   # File already exists
   doAssertRaises(OperationFailed):
