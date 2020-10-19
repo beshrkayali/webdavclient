@@ -51,7 +51,7 @@ let t = waitFor wd.ls(
 
 for url, prop in t.pairs:
   echo(url)
-  for pname, pval in v.pairs:
+  for pname, pval in prop.pairs:
     echo(" - " , pname, ": ", pval)
   echo("---")
 
