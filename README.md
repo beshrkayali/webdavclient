@@ -6,70 +6,72 @@
 This is an implementation for some of the basic
 operations to communicate with a WebDAV server using Nim.
 
+The client is **synchronous** and is built on top of
+[puppy](https://github.com/treeform/puppy). On Linux puppy uses libcurl, so
+install it (e.g. `libcurl4-openssl-dev`) to build; macOS and Windows use the
+native HTTP stack and need no extra dependency.
+
 
 Example usage:
 
 ```nim
-import webdavclient, asyncdispatch, tables, options
+import webdavclient, tables
 
 # Only Basic auth is currently supported. Make sure you're
-# connecting over ssl
+# connecting over ssl.
 
-let wd = newAsyncWebDAV(
-  address="https://dav.example.com",
-  username="username",
-  password="password"
+let wd = newWebDAV(
+  address = "https://dav.example.com",
+  username = "username",
+  password = "password"
 )
 
-# Get props (propname request)
-let possible_props = waitFor wd.props(
-  "/",
-  depth=ZERO
-)
+# Get the property names available for a resource (propname request)
+let possibleProps = wd.props("/", depth = ZERO)
 
-for url, props in possible_props["/"]:
-  echo(url, props)
+for href, names in possibleProps:
+  echo href, ": ", names
 
-# List files
-# Default webdav properties don't require a namespace
-let t = waitFor wd.ls(
+# List files.
+# Default webdav properties don't require a namespace.
+let t = wd.ls(
   "/",
-  props=some(@[
+  @[
     "getcontentlength",
     "getlastmodified",
-	"creationdate",
-	"getcontenttype",
-	"nc:has-preview",
-	"oc:favorite",
-  ]),
-  namespaces=some(@[
+    "creationdate",
+    "getcontenttype",
+    "nc:has-preview",
+    "oc:favorite",
+  ],
+  namespaces = @[
     ("oc", "http://owncloud.org/ns"),
     ("nc", "http://nextcloud.org/ns")
-  ]),
-  depth=ONE
+  ],
+  depth = ONE
 )
 
 for url, prop in t.pairs:
   echo(url)
   for pname, pval in prop.pairs:
-    echo(" - " , pname, ": ", pval)
+    echo(" - ", pname, ": ", pval)
   echo("---")
 
-# Downlaod a file
-waitFor wd.download(path="files/example.md", destination="/home/me/example.md")
+# Download a file (buffered in memory, then written to disk)
+wd.download(path = "files/example.md", destination = "/home/me/example.md")
 
 # Upload a file
-waitFor wd.upload(filepath="files/example.md", destination="/home/me/example.md")
+wd.upload(filepath = "files/example.md", destination = "/home/me/example.md")
 
 # Delete a file
-waitFor wd.rm("files/example.md")
+wd.rm("files/example.md")
 
 # Create a collection (directory)
-waitFor wd.mkdir("files/new/")
+wd.mkdir("files/new/")
 
 # Move a file
-waitFor wd.mv(path="files/example.md", destination="files/new/example.md", overwrite=true)
+wd.mv(path = "files/example.md", destination = "files/new/example.md", overwrite = true)
 
 # Copy a file
-waitFor wd.cp(path="files/new/example.md", destination="files/example.md", overwrite=true)
+wd.cp(path = "files/new/example.md", destination = "files/example.md", overwrite = true)
 ```

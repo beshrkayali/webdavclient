@@ -1,124 +1,156 @@
 ## A WebDAV Client for Nim.
+##
+## Built on top of `puppy <https://github.com/treeform/puppy>`_, so the API is
+## synchronous. On Linux puppy needs libcurl available at build/run time;
+## macOS and Windows use the native HTTP stack.
 
-import options
-from sequtils import zip
-from strutils import replace, split, parseInt
-import strtabs, tables, base64, xmlparser, xmltree, asyncfile, os
-import uri, asyncdispatch, httpClient
-
-
-const REDIRECTS = @[HttpCode(301), HttpCode(302), HttpCode(307), HttpCode(308)]
+import std/[base64, strutils, tables, strtabs, xmlparser, xmltree, os, uri]
+import puppy
 
 type
-  OperationFailed* = object of Exception
-    code: HttpCode
+  OperationFailed* = object of CatchableError
+    ## Raised when the server (or a local check) reports a failed operation.
+    ## `code` carries the HTTP status code (0 for local failures).
+    code*: int
 
-type
-  filesTable = Table[string, string]
-  header = tuple
-    name: string
-    value: string
-  namespace = tuple
+  FilesTable* = Table[string, string]
+
+  Namespace* = tuple
     name: string
     url: string
 
-type
   Depth* = enum
     ZERO = "0"
     ONE = "1"
     INF = "infinity"
 
+  WebDAV* = ref object
+    address*: string
+    path*: string
+    timeout*: float32
+    username: string
+    password: string
 
-proc operationFailed(msg: string, code: HttpCode) {.noreturn.} =
-  ## raises an OperationFailed exception with message `msg`.
-  var e: ref OperationFailed
-  new(e)
-  e.msg = msg
+
+proc operationFailed(msg: string, code: int) {.noreturn.} =
+  ## Raise an `OperationFailed` carrying the HTTP status `code`.
+  var e = newException(OperationFailed, msg)
   e.code = code
   raise e
 
 
 proc operationFailed(msg: string) {.noreturn.} =
-  var e: ref OperationFailed
-  new(e)
-  e.msg = msg
-  raise e
+  raise newException(OperationFailed, msg)
 
 
-type AsyncWebDAV* = ref object of RootObj
-  client*: AsyncHttpClient
-  path*: string
-  address*: string
-  username: string
-  password: string
+proc is2xx(code: int): bool =
+  code >= 200 and code < 300
 
 
-proc newAsyncWebDAV*(
+proc newWebDAV*(
   address: string,
   username: string,
   password: string,
-  path: string = ""
-): AsyncWebDAV =
-  ## Create an async webdav client. Only Basic auth is supported for now.
-  let fulladdr = parseUri(address) / path
-  let client = newAsyncHttpClient(maxRedirects = 0)
-
-  AsyncWebDAV(
-    client: client,
+  path: string = "",
+  timeout: float32 = 60,
+): WebDAV =
+  ## Create a webdav client. Only Basic auth is supported for now.
+  WebDAV(
     path: path,
-    address: $fulladdr,
+    address: $(parseUri(address) / path),
     username: username,
     password: password,
+    timeout: timeout,
   )
 
 
 proc request(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
-  httpMethod: string,
+  verb: string,
   body: string = "",
-  headers: Option[seq[header]] = none(seq[header]),
-): Future[AsyncResponse] {.async.} =
+  extraHeaders: seq[(string, string)] = @[],
+): Response =
+  ## Issue a request to `path` (joined onto the client address) with Basic auth.
+  ## puppy follows redirects and keeps the custom verb across them.
+  var headers: HttpHeaders
+  headers["Authorization"] = "Basic " & base64.encode(wd.username & ":" & wd.password)
+  for (k, v) in extraHeaders:
+    headers[k] = v
+  if body.len > 0 and "Content-Type" notin headers:
+    headers["Content-Type"] = "application/xml; charset=utf-8"
 
-  let auth = "Basic " & base64.encode(
-    wd.username & ":" & wd.password
-  )
-
-  wd.client.headers = newHttpHeaders({"Authorization": auth})
-
-  if isSome(headers):
-    for (h, v) in headers.get:
-      wd.client.headers[h] = v
-
-  return await wd.client.request(
+  let req = newRequest(
     $(parseUri(wd.address) / path),
-    httpMethod = httpMethod,
-    body = body
+    verb = verb,
+    headers = headers,
+    timeout = wd.timeout,
   )
+  req.body = body
+  result = fetch(req)
 
 
 proc getDefaultXmlAttrs(): XmlAttributes =
   {"xmlns": "DAV:"}.toXmlAttributes
 
 
-proc shouldRedirect(resp: AsyncResponse): bool =
-  return resp.code in REDIRECTS and resp.headers.hasKey("location")
+proc parsePropfindList(
+  body: string, stripPrefix: string
+): Table[string, FilesTable] =
+  ## Parse a PROPFIND multistatus response into a table of (relative href ->
+  ## its properties). `stripPrefix` is removed from the start of each href.
+  let node = parseXml(body)
+  let ns = node.tag.split(":")[0] & ":"
+  result = initTable[string, FilesTable]()
+
+  for item in node:
+    let href = item.child(ns & "href")
+    if href == nil:
+      continue
+
+    var propsTable: FilesTable
+    let propstat = item.child(ns & "propstat")
+    if propstat != nil:
+      for prop in propstat.findAll(ns & "prop"):
+        for p in prop:
+          propsTable[p.tag] = p.innerText
+
+    var key = href.innerText
+    if stripPrefix.len > 0:
+      key = key.replace(stripPrefix, "")
+    result[key] = propsTable
 
 
-proc locationHeader(resp: AsyncResponse): string =
-  return resp.headers["location"]
+proc parsePropNames(body: string): Table[string, seq[string]] =
+  ## Parse a `propname` PROPFIND response into a table of (href -> property
+  ## names available for that resource).
+  let node = parseXml(body)
+  let ns = node.tag.split(":")[0] & ":"
+  result = initTable[string, seq[string]]()
+
+  for response in node.findAll(ns & "response"):
+    let href = response.child(ns & "href")
+    if href == nil:
+      continue
+
+    var names: seq[string]
+    for propstat in response.findAll(ns & "propstat"):
+      for prop in propstat.findAll(ns & "prop"):
+        for p in prop:
+          names.add(p.tag.replace(ns, ""))
+    result[href.innerText] = names
 
 
 proc ls*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
-  props: Option[seq[string]] = none(seq[string]),
-  namespaces: Option[seq[namespace]] = none(seq[namespace]),
+  props: seq[string] = @[],
+  namespaces: seq[Namespace] = @[],
   depth: Depth = ONE,
-): Future[Table[string, filesTable]] {.async.} =
+): Table[string, FilesTable] =
   ## Returns a table of relative urls (of files and directories)
   ## and their properties at specified path (or only of the specified
-  ## path if `depth` is set to `ZERO`.
+  ## path if `depth` is set to `ZERO`).
   ##
   ## `DAV:` is the default namespace, meaning dav properties
   ## can be provided directly without a namespace.
@@ -127,26 +159,22 @@ proc ls*(
   ## ```nim
   ## wd.ls(
   ##   "/",
-  ##   some(@["getcontentlength", "getlastmodified"]),
-  ##   depth=ONE
+  ##   @["getcontentlength", "getlastmodified"],
+  ##   depth = ONE
   ## )
   ## ```
   ##
   ## If no props are provided, no request body will be sent.
-
-  var propNode = newElement("prop")
-  var nsAttrs = getDefaultXmlAttrs()
-
-  if isSome(namespaces):
-    for (ns, url) in namespaces.get:
-      nsAttrs["xmlns:" & ns] = url
-
   var reqBody = ""
 
-  if isSome(props):
-    for p in props.get:
-      let pNode = newElement(p)
-      propNode.add(pNode)
+  if props.len > 0:
+    var nsAttrs = getDefaultXmlAttrs()
+    for (ns, url) in namespaces:
+      nsAttrs["xmlns:" & ns] = url
+
+    var propNode = newElement("prop")
+    for p in props:
+      propNode.add(newElement(p))
 
     var reqXml = newElement("propfind")
     reqXml.attrs = nsAttrs
@@ -154,231 +182,148 @@ proc ls*(
 
     reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $reqXml
 
-  let resp = await wd.request(
+  let resp = wd.request(
     path,
-    httpMethod = "PROPFIND",
+    verb = "PROPFIND",
     body = reqBody,
-    headers = some(@[("Depth", $depth)])
+    extraHeaders = @[("Depth", $depth)],
   )
 
-  if resp.shouldRedirect:
-    let newPath = resp.locationHeader().replace(wd.address, "")
-    return await wd.ls(
-      path = newPath,
-      props = props,
-      namespaces = namespaces,
-      depth = depth,
-    )
-
-  if resp.code != HttpCode(207):
+  if resp.code != 207:
     operationFailed(
-      "Got unexpected status " & resp.status & " with response from server:\n" &
-      await resp.body, resp.code
+      "Got unexpected status " & $resp.code &
+        " with response from server:\n" & resp.body,
+      resp.code,
     )
 
-  let body = await resp.body
-  let node: XmlNode = parseXml(body)
-  var files = initTable[string, filesTable]()
-  var hrefs = newSeq[string]()
-  var propsTables = newSeq[filesTable]()
+  result = parsePropfindList(resp.body, wd.path)
 
-  let NS = node.tag.split(":")[0] & ":"
-
-  for item in node:
-    let href = item.child(NS & "href")
-    let props = item.child(NS & "propstat")
-    hrefs.add(href.innerText.replace(wd.path, ""))
-
-    var propsTable: filesTable
-    for prop in props.findAll(NS & "prop"):
-      for p in prop:
-        propsTable[p.tag] = p.innerText
-
-    propsTables.add(propsTable)
-
-  for pairs in zip(hrefs, propsTables):
-    let (href, props) = pairs
-    files[href] = props
-
-  return files
 
 proc props*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
-  namespaces: Option[seq[namespace]] = none(seq[namespace]),
+  namespaces: seq[Namespace] = @[],
   depth: Depth = ONE,
-): Future[Table[string, seq[string]]] {.async.} =
-  var reqXml = newElement("propfind")
-
+): Table[string, seq[string]] =
+  ## Returns the property names available for each resource at `path`
+  ## (a `propname` PROPFIND request).
   var nsAttrs = getDefaultXmlAttrs()
+  for (ns, url) in namespaces:
+    nsAttrs["xmlns:" & ns] = url
 
-  if isSome(namespaces):
-    for (ns, url) in namespaces.get:
-      nsAttrs["xmlns:" & ns] = url
-
+  var reqXml = newElement("propfind")
   reqXml.attrs = nsAttrs
   reqXml.add(newElement("propname"))
 
   let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $reqXml
 
-  let resp = await wd.request(
+  let resp = wd.request(
     path,
-    httpMethod = "PROPFIND",
+    verb = "PROPFIND",
     body = reqBody,
-    headers = some(
-      @[("Depth", $depth)]
-    )
+    extraHeaders = @[("Depth", $depth)],
   )
 
-  if resp.shouldRedirect:
-    let newPath = resp.locationHeader().replace(wd.address, "")
-    return await wd.props(
-      path = newPath,
-      namespaces = namespaces,
-      depth = depth,
-    )
-
-  if resp.code != HttpCode(207):
+  if resp.code != 207:
     operationFailed(
-      "Got unexpected response from server:\n" & await resp.body, resp.code
+      "Got unexpected response from server:\n" & resp.body, resp.code
     )
 
-  let body = await resp.body
-  let node: XmlNode = parseXml(body)
-
-  var properties = initTable[string, seq[string]]()
-
-  let NS = node.tag.split(":")[0] & ":"
-
-  for response in node.findAll(NS & "response"):
-    let href = response.child(NS & "href")
-    properties[href.innerText] = @[]
-    let props = response.child(NS & "propstat")
-    for pstat in response:
-      for prop in pstat.findAll(NS & "prop"):
-        for p in prop:
-          let tag = p.tag.replace(NS, "")
-          properties[href.innerText].add(tag)
-
-  return properties
+  result = parsePropNames(resp.body)
 
 
 proc download*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
   destination: string,
-) {.async.} =
-  let resp = await wd.request(
-    path,
-    httpMethod = "GET",
-  )
+) =
+  ## Download the resource at `path` to a local file. The whole body is
+  ## buffered in memory before being written.
+  let resp = wd.request(path, verb = "GET")
 
-  if resp.code != HttpCode(200):
-    operationFailed(await resp.body, resp.code)
+  if resp.code != 200:
+    operationFailed(resp.body, resp.code)
 
-  var output = openAsync(destination, fmWrite)
-
-  if not isNil(output):
-    await output.writeFromStream(resp.bodyStream)
-    output.close()
+  writeFile(destination, resp.body)
 
 
 proc upload*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   filepath: string,
   destination: string,
-) {.async.} =
+) =
+  ## Upload a local file to `destination`.
   if not fileExists(filepath):
     operationFailed("File \"" & filepath & "\" not found")
 
-  var strm = openAsync(filepath, fmRead)
-  let reqBody = await strm.readAll()
+  let resp = wd.request(destination, verb = "PUT", body = readFile(filepath))
 
-  let resp = await wd.request(
-    destination,
-    httpMethod = "PUT",
-    body = reqBody,
-  )
-
-  if resp.code != HttpCode(201):
-    operationFailed(await resp.body, resp.code)
+  if not is2xx(resp.code):
+    operationFailed(resp.body, resp.code)
 
 
 proc mkdir*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
-) {.async.} =
-  let resp = await wd.request(
-    path,
-    httpMethod = "MKCOL",
-  )
+) =
+  ## Create a collection (directory).
+  let resp = wd.request(path, verb = "MKCOL")
 
-  if resp.code != HttpCode(201):
-    operationFailed(await resp.body, resp.code)
+  if resp.code notin [200, 201]:
+    operationFailed(resp.body, resp.code)
 
 
 proc rm*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
-) {.async.} =
+) =
   ## Delete a file or directory. If path is a directory,
   ## all resources within will be deleted recursively.
-  let resp = await wd.request(
-    path,
-    httpMethod = "DELETE",
-  )
+  let resp = wd.request(path, verb = "DELETE")
 
-  if resp.code != HttpCode(204):
-    operationFailed(await resp.body, resp.code)
+  if resp.code notin [200, 204]:
+    operationFailed(resp.body, resp.code)
 
 
 proc mv*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
   destination: string,
   overwrite: bool = false,
   depth: Depth = INF,
-) {.async.} =
+) =
   ## Move a resource from one location to another.
-  var overwriteValue = "F"
-  if overwrite:
-    overwriteValue = "T"
-
-  let resp = await wd.request(
+  let resp = wd.request(
     path,
-    httpMethod = "MOVE",
-    headers = some(
-      @[("Destination", $(parseUri(wd.address) / destination)),
-        ("Overwrite", overwriteValue),
-        ("Depth", $depth)]
-    )
+    verb = "MOVE",
+    extraHeaders = @[
+      ("Destination", $(parseUri(wd.address) / destination)),
+      ("Overwrite", if overwrite: "T" else: "F"),
+      ("Depth", $depth),
+    ],
   )
 
-  if resp.code != HttpCode(204) and resp.code != HttpCode(201):
-    operationFailed(await resp.body, resp.code)
+  if resp.code notin [201, 204]:
+    operationFailed(resp.body, resp.code)
 
 
 proc cp*(
-  wd: AsyncWebDAV,
+  wd: WebDAV,
   path: string,
   destination: string,
   overwrite: bool = false,
   depth: Depth = INF,
-) {.async.} =
+) =
   ## Copy a resource to another location.
-  var overwriteValue = "F"
-  if overwrite:
-    overwriteValue = "T"
-
-  let resp = await wd.request(
+  let resp = wd.request(
     path,
-    httpMethod = "COPY",
-    headers = some(
-      @[("Destination", $(parseUri(wd.address) / destination)),
-        ("Overwrite", overwriteValue),
-        ("Depth", $depth)]
-    )
+    verb = "COPY",
+    extraHeaders = @[
+      ("Destination", $(parseUri(wd.address) / destination)),
+      ("Overwrite", if overwrite: "T" else: "F"),
+      ("Depth", $depth),
+    ],
   )
 
-  if resp.code != HttpCode(204) and resp.code != HttpCode(201):
-    operationFailed(await resp.body, resp.code)
+  if resp.code notin [201, 204]:
+    operationFailed(resp.body, resp.code)
