@@ -10,7 +10,7 @@ jobs:
       matrix:
         nim: ['2.0.x', '2.2.x', 'devel']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install libcurl
         run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: jiro4989/setup-nim-action@v2
@@ -25,6 +25,6 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: docker compose up and test
         run: make docker-test

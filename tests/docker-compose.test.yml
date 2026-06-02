@@ -5,7 +5,8 @@ services:
     working_dir: /usr/src/app
     tty: true
     command: >
-      sh -c "apt-get update -qq
+      sh -c "git config --global --add safe.directory /usr/src/app
+      && apt-get update -qq
       && apt-get install -y -qq libcurl4-openssl-dev
       && sleep 5
       && nimble integration -y"
