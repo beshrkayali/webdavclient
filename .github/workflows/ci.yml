@@ -16,7 +16,13 @@ jobs:
       - uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: ${{ matrix.nim }}
+          use-nightlies: true
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cache nimble packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nimble
+          key: nimble-${{ runner.os }}-${{ hashFiles('webdavclient.nimble') }}
       - name: Install dependencies
         run: nimble install -dy
       - name: Run unit tests
