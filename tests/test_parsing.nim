@@ -45,6 +45,36 @@ const propNamesBody = """<?xml version="1.0" encoding="utf-8"?>
   </d:response>
 </d:multistatus>"""
 
+const proppatchSuccessBody = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:Z="http://ns.example.com/z/">
+  <D:response>
+    <D:href>/files/example.md</D:href>
+    <D:propstat>
+      <D:prop>
+        <Z:Author/>
+        <Z:Title/>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+const proppatchMixedBody = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:Z="http://ns.example.com/z/">
+  <D:response>
+    <D:href>/bar.html</D:href>
+    <D:propstat>
+      <D:prop><Z:Authors/></D:prop>
+      <D:status>HTTP/1.1 424 Failed Dependency</D:status>
+    </D:propstat>
+    <D:propstat>
+      <D:prop><Z:Copyright-Owner/></D:prop>
+      <D:status>HTTP/1.1 409 Conflict</D:status>
+    </D:propstat>
+    <D:responsedescription>Copyright Owner cannot be deleted or altered.</D:responsedescription>
+  </D:response>
+</D:multistatus>"""
+
 suite "parsePropfindList":
   test "extracts hrefs and their properties":
     let files = parsePropfindList(propfindListBody, "")
@@ -79,6 +109,25 @@ suite "parsePropNames":
     check "getcontenttype" in props["/"]
     check "resourcetype" in props["/"]
     check props["/"].len == 4
+
+suite "parseProppatchResponse":
+  test "maps property names to their status code":
+    let res = parseProppatchResponse(proppatchSuccessBody)
+    check res.len == 2
+    check res["Z:Author"] == 200
+    check res["Z:Title"] == 200
+
+  test "groups properties by status across multiple propstats":
+    let res = parseProppatchResponse(proppatchMixedBody)
+    check res.len == 2
+    check res["Z:Authors"] == 424
+    check res["Z:Copyright-Owner"] == 409
+
+suite "statusCode":
+  test "extracts the numeric code from a status line":
+    check statusCode("HTTP/1.1 200 OK") == 200
+    check statusCode("HTTP/1.1 424 Failed Dependency") == 424
+    check statusCode("garbage") == 0
 
 suite "is2xx":
   test "classifies status codes":

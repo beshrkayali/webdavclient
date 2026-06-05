@@ -99,6 +99,56 @@ This is an example file.
   assert dir2.hasKey("/files/")
   assert dir2.hasKey("/files/example.md")
 
+  # Set a custom property and read it back
+  discard wd.proppatch(
+    "files/example.md",
+    setProps = @[("t:color", "blue")],
+    namespaces = @[("t", "http://example.com/ns/")],
+  )
+
+  block:
+    let afterSet = wd.ls(
+      "files/example.md",
+      @["t:color"],
+      namespaces = @[("t", "http://example.com/ns/")],
+      depth = ZERO,
+    )
+    # The server picks its own prefix, so check the value not the key
+    var values: seq[string]
+    for _, value in afterSet["/files/example.md"]:
+      values.add(value)
+    assert "blue" in values
+
+  # Remove the custom property
+  discard wd.proppatch(
+    "files/example.md",
+    removeProps = @["t:color"],
+    namespaces = @[("t", "http://example.com/ns/")],
+  )
+
+  block:
+    let afterRemove = wd.ls(
+      "files/example.md",
+      @["t:color"],
+      namespaces = @[("t", "http://example.com/ns/")],
+      depth = ZERO,
+    )
+    var values: seq[string]
+    for _, value in afterRemove["/files/example.md"]:
+      values.add(value)
+    assert "blue" notin values
+
+  # Setting a read-only property fails
+  doAssertRaises(OperationFailed):
+    discard wd.proppatch(
+      "files/example.md",
+      setProps = @[("getcontentlength", "999")],
+    )
+
+  # Nothing to set or remove (local)
+  doAssertRaises(OperationFailed):
+    discard wd.proppatch("files/example.md")
+
   # Delete
   wd.rm("example.md")
   wd.rm("files/example.md")

@@ -74,4 +74,12 @@ wd.mv(path = "files/example.md", destination = "files/new/example.md", overwrite
 
 # Copy a file
 wd.cp(path = "files/new/example.md", destination = "files/example.md", overwrite = true)
+
+# Set and/or remove properties (PROPPATCH)
+discard wd.proppatch(
+  "files/example.md",
+  setProps = @[("oc:favorite", "1")],
+  removeProps = @["oc:tag"],
+  namespaces = @[("oc", "http://owncloud.org/ns")]
+)
 ```

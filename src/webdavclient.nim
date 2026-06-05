@@ -47,6 +47,16 @@ proc is2xx(code: int): bool =
   code >= 200 and code < 300
 
 
+proc statusCode(statusLine: string): int =
+  ## Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
+  let parts = statusLine.splitWhitespace()
+  if parts.len >= 2:
+    try:
+      result = parseInt(parts[1])
+    except ValueError:
+      result = 0
+
+
 proc newWebDAV*(
   address: string,
   username: string,
@@ -141,6 +151,28 @@ proc parsePropNames(body: string): Table[string, seq[string]] =
     result[href.innerText] = names
 
 
+proc parseProppatchResponse(body: string): Table[string, int] =
+  ## Parse a PROPPATCH multistatus response into a table of (property name
+  ## -> HTTP status code). Properties are grouped by status across several
+  ## `propstat` elements.
+  let node = parseXml(body)
+  let ns = node.tag.split(":")[0] & ":"
+  result = initTable[string, int]()
+
+  let response = node.child(ns & "response")
+  if response == nil:
+    return
+
+  for propstat in response.findAll(ns & "propstat"):
+    let status = propstat.child(ns & "status")
+    if status == nil:
+      continue
+    let code = statusCode(status.innerText)
+    for prop in propstat.findAll(ns & "prop"):
+      for p in prop:
+        result[p.tag] = code
+
+
 proc ls*(
   wd: WebDAV,
   path: string,
@@ -230,6 +262,81 @@ proc props*(
     )
 
   result = parsePropNames(resp.body)
+
+
+proc proppatch*(
+  wd: WebDAV,
+  path: string,
+  setProps: seq[(string, string)] = @[],
+  removeProps: seq[string] = @[],
+  namespaces: seq[Namespace] = @[],
+): Table[string, int] =
+  ## Set and/or remove properties on the resource at `path`. `setProps` is
+  ## a list of (name, value) pairs to set; `removeProps` is a list of names
+  ## to remove. Setting happens before removing.
+  ##
+  ## Property names can carry a namespace prefix declared in `namespaces`,
+  ## the same as with `ls`. `DAV:` is the default namespace.
+  ##
+  ## ```nim
+  ## discard wd.proppatch(
+  ##   "/files/example.md",
+  ##   setProps = @[("oc:favorite", "1")],
+  ##   removeProps = @["oc:tag"],
+  ##   namespaces = @[("oc", "http://owncloud.org/ns")],
+  ## )
+  ## ```
+  ##
+  ## Returns a table of property names to status codes. PROPPATCH is atomic,
+  ## so any property with a non-2xx status raises `OperationFailed`.
+  if setProps.len == 0 and removeProps.len == 0:
+    operationFailed("proppatch requires at least one property to set or remove")
+
+  var nsAttrs = getDefaultXmlAttrs()
+  for (ns, url) in namespaces:
+    nsAttrs["xmlns:" & ns] = url
+
+  var reqXml = newElement("propertyupdate")
+  reqXml.attrs = nsAttrs
+
+  if setProps.len > 0:
+    var propNode = newElement("prop")
+    for (name, value) in setProps:
+      var el = newElement(name)
+      el.add(newText(value))
+      propNode.add(el)
+    var setNode = newElement("set")
+    setNode.add(propNode)
+    reqXml.add(setNode)
+
+  if removeProps.len > 0:
+    var propNode = newElement("prop")
+    for name in removeProps:
+      propNode.add(newElement(name))
+    var removeNode = newElement("remove")
+    removeNode.add(propNode)
+    reqXml.add(removeNode)
+
+  let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $reqXml
+
+  let resp = wd.request(path, verb = "PROPPATCH", body = reqBody)
+
+  if resp.code != 207:
+    operationFailed(
+      "Got unexpected status " & $resp.code &
+        " with response from server:\n" & resp.body,
+      resp.code,
+    )
+
+  result = parseProppatchResponse(resp.body)
+
+  for name, code in result:
+    if not is2xx(code):
+      operationFailed(
+        "Property \"" & name & "\" failed with status " & $code & ":\n" &
+          resp.body,
+        code,
+      )
 
 
 proc download*(
