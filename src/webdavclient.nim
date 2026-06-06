@@ -24,6 +24,20 @@ type
     ONE = "1"
     INF = "infinity"
 
+  LockScope* = enum
+    EXCLUSIVE = "exclusive"
+    SHARED = "shared"
+
+  Lock* = object
+    ## A write lock returned by `lock`. `token` identifies the lock and must
+    ## be passed to `unlock` and to any write touching the locked resource.
+    token*: string
+    root*: string
+    scope*: LockScope
+    depth*: Depth
+    owner*: string
+    timeout*: string
+
   WebDAV* = ref object
     address*: string
     path*: string
@@ -45,6 +59,15 @@ proc operationFailed(msg: string) {.noreturn.} =
 
 proc is2xx(code: int): bool =
   code >= 200 and code < 300
+
+
+proc ifHeaders(token: string): seq[(string, string)] =
+  ## Build the `If` header that submits a lock `token` on a write request
+  ## (RFC 4918, section 10.4). Empty when no token is given.
+  if token.len > 0:
+    @[("If", "(<" & token & ">)")]
+  else:
+    @[]
 
 
 proc statusCode(statusLine: string): int =
@@ -173,6 +196,50 @@ proc parseProppatchResponse(body: string): Table[string, int] =
         result[p.tag] = code
 
 
+proc parseLockResponse(body: string): Lock =
+  ## Parse the prop/lockdiscovery/activelock body returned by a LOCK request.
+  ## The `Lock-Token` response header carries the authoritative token, so
+  ## callers usually overwrite `token` with it afterwards.
+  result = Lock(scope: EXCLUSIVE, depth: INF)
+  let node = parseXml(body)
+  let ns = node.tag.split(":")[0] & ":"
+
+  let lockdiscovery = node.child(ns & "lockdiscovery")
+  if lockdiscovery == nil:
+    return
+  let activelock = lockdiscovery.child(ns & "activelock")
+  if activelock == nil:
+    return
+
+  let locktoken = activelock.child(ns & "locktoken")
+  if locktoken != nil:
+    let href = locktoken.child(ns & "href")
+    if href != nil:
+      result.token = href.innerText.strip()
+
+  let lockroot = activelock.child(ns & "lockroot")
+  if lockroot != nil:
+    let href = lockroot.child(ns & "href")
+    if href != nil:
+      result.root = href.innerText.strip()
+
+  let lockscope = activelock.child(ns & "lockscope")
+  if lockscope != nil and lockscope.child(ns & "shared") != nil:
+    result.scope = SHARED
+
+  let depth = activelock.child(ns & "depth")
+  if depth != nil and depth.innerText.strip() == "0":
+    result.depth = ZERO
+
+  let owner = activelock.child(ns & "owner")
+  if owner != nil:
+    result.owner = owner.innerText.strip()
+
+  let timeout = activelock.child(ns & "timeout")
+  if timeout != nil:
+    result.timeout = timeout.innerText.strip()
+
+
 proc ls*(
   wd: WebDAV,
   path: string,
@@ -270,6 +337,7 @@ proc proppatch*(
   setProps: seq[(string, string)] = @[],
   removeProps: seq[string] = @[],
   namespaces: seq[Namespace] = @[],
+  token: string = "",
 ): Table[string, int] =
   ## Set and/or remove properties on the resource at `path`. `setProps` is
   ## a list of (name, value) pairs to set; `removeProps` is a list of names
@@ -319,7 +387,12 @@ proc proppatch*(
 
   let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $reqXml
 
-  let resp = wd.request(path, verb = "PROPPATCH", body = reqBody)
+  let resp = wd.request(
+    path,
+    verb = "PROPPATCH",
+    body = reqBody,
+    extraHeaders = ifHeaders(token),
+  )
 
   if resp.code != 207:
     operationFailed(
@@ -337,6 +410,70 @@ proc proppatch*(
           resp.body,
         code,
       )
+
+
+proc lock*(
+  wd: WebDAV,
+  path: string,
+  scope: LockScope = EXCLUSIVE,
+  owner: string = "",
+  depth: Depth = INF,
+  timeout: string = "",
+): Lock =
+  ## Take a write lock on the resource at `path` (RFC 4918, section 9.10) and
+  ## return the resulting `Lock`. Its `token` must be passed to `unlock` and
+  ## to any write touching the locked resource (the `token` parameter on
+  ## `upload`, `mkdir`, `rm`, `mv`, `cp`, and `proppatch`).
+  ##
+  ## `depth` must be `ZERO` or `INF`. `timeout` is an optional hint such as
+  ## "Second-3600" or "Infinite"; the server may choose its own.
+  var lockInfo = newElement("lockinfo")
+  lockInfo.attrs = getDefaultXmlAttrs()
+
+  var scopeNode = newElement("lockscope")
+  scopeNode.add(newElement($scope))
+  lockInfo.add(scopeNode)
+
+  var typeNode = newElement("locktype")
+  typeNode.add(newElement("write"))
+  lockInfo.add(typeNode)
+
+  if owner.len > 0:
+    var ownerNode = newElement("owner")
+    ownerNode.add(newText(owner))
+    lockInfo.add(ownerNode)
+
+  let reqBody = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" & $lockInfo
+
+  var extra = @[("Depth", $depth)]
+  if timeout.len > 0:
+    extra.add(("Timeout", timeout))
+
+  let resp = wd.request(path, verb = "LOCK", body = reqBody, extraHeaders = extra)
+
+  if resp.code notin [200, 201]:
+    operationFailed(resp.body, resp.code)
+
+  result = parseLockResponse(resp.body)
+  let header = resp.headers["Lock-Token"]
+  if header.len > 0:
+    result.token = header.strip(chars = {'<', '>'})
+
+
+proc unlock*(
+  wd: WebDAV,
+  path: string,
+  token: string,
+) =
+  ## Release the lock identified by `token` on `path` (section 9.11).
+  let resp = wd.request(
+    path,
+    verb = "UNLOCK",
+    extraHeaders = @[("Lock-Token", "<" & token & ">")],
+  )
+
+  if resp.code != 204:
+    operationFailed(resp.body, resp.code)
 
 
 proc download*(
@@ -358,12 +495,19 @@ proc upload*(
   wd: WebDAV,
   filepath: string,
   destination: string,
+  token: string = "",
 ) =
-  ## Upload a local file to `destination`.
+  ## Upload a local file to `destination`. Pass `token` to write through a
+  ## lock held on the destination.
   if not fileExists(filepath):
     operationFailed("File \"" & filepath & "\" not found")
 
-  let resp = wd.request(destination, verb = "PUT", body = readFile(filepath))
+  let resp = wd.request(
+    destination,
+    verb = "PUT",
+    body = readFile(filepath),
+    extraHeaders = ifHeaders(token),
+  )
 
   if not is2xx(resp.code):
     operationFailed(resp.body, resp.code)
@@ -372,9 +516,11 @@ proc upload*(
 proc mkdir*(
   wd: WebDAV,
   path: string,
+  token: string = "",
 ) =
-  ## Create a collection (directory).
-  let resp = wd.request(path, verb = "MKCOL")
+  ## Create a collection (directory). Pass `token` to write through a lock
+  ## held on the parent collection.
+  let resp = wd.request(path, verb = "MKCOL", extraHeaders = ifHeaders(token))
 
   if resp.code notin [200, 201]:
     operationFailed(resp.body, resp.code)
@@ -383,10 +529,12 @@ proc mkdir*(
 proc rm*(
   wd: WebDAV,
   path: string,
+  token: string = "",
 ) =
   ## Delete a file or directory. If path is a directory,
   ## all resources within will be deleted recursively.
-  let resp = wd.request(path, verb = "DELETE")
+  ## Pass `token` to write through a lock held on the target.
+  let resp = wd.request(path, verb = "DELETE", extraHeaders = ifHeaders(token))
 
   if resp.code notin [200, 204]:
     operationFailed(resp.body, resp.code)
@@ -398,8 +546,10 @@ proc mv*(
   destination: string,
   overwrite: bool = false,
   depth: Depth = INF,
+  token: string = "",
 ) =
-  ## Move a resource from one location to another.
+  ## Move a resource from one location to another. Pass `token` to write
+  ## through a lock held on the source or destination.
   let resp = wd.request(
     path,
     verb = "MOVE",
@@ -407,7 +557,7 @@ proc mv*(
       ("Destination", $(parseUri(wd.address) / destination)),
       ("Overwrite", if overwrite: "T" else: "F"),
       ("Depth", $depth),
-    ],
+    ] & ifHeaders(token),
   )
 
   if resp.code notin [201, 204]:
@@ -420,8 +570,10 @@ proc cp*(
   destination: string,
   overwrite: bool = false,
   depth: Depth = INF,
+  token: string = "",
 ) =
-  ## Copy a resource to another location.
+  ## Copy a resource to another location. Pass `token` to write through a
+  ## lock held on the destination.
   let resp = wd.request(
     path,
     verb = "COPY",
@@ -429,7 +581,7 @@ proc cp*(
       ("Destination", $(parseUri(wd.address) / destination)),
       ("Overwrite", if overwrite: "T" else: "F"),
       ("Depth", $depth),
-    ],
+    ] & ifHeaders(token),
   )
 
   if resp.code notin [201, 204]:

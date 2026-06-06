@@ -82,4 +82,12 @@ discard wd.proppatch(
   removeProps = @["oc:tag"],
   namespaces = @[("oc", "http://owncloud.org/ns")]
 )
+
+# Take an exclusive write lock (LOCK), then pass the token on writes that
+# touch the locked resource. Without the token the server returns 423 Locked.
+let lock = wd.lock("files/example.md", owner = "me")
+wd.upload(filepath = "files/example.md", destination = "files/example.md", token = lock.token)
+
+# Release the lock (UNLOCK)
+wd.unlock("files/example.md", lock.token)
 ```

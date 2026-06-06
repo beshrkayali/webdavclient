@@ -149,6 +149,33 @@ This is an example file.
   doAssertRaises(OperationFailed):
     discard wd.proppatch("files/example.md")
 
+  # Take an exclusive write lock and get a token back
+  let lk = wd.lock("files/example.md", owner = "tester")
+  assert lk.token.len > 0
+  assert lk.scope == EXCLUSIVE
+
+  # Writes without the token are refused while the lock is held
+  doAssertRaises(OperationFailed):
+    wd.upload(filepath = "tests/example.md", destination = "files/example.md")
+
+  doAssertRaises(OperationFailed):
+    wd.rm("files/example.md")
+
+  # The same write succeeds when the token is supplied
+  wd.upload(
+    filepath = "tests/example.md",
+    destination = "files/example.md",
+    token = lk.token,
+  )
+
+  # Unlocking with a bogus token fails
+  doAssertRaises(OperationFailed):
+    wd.unlock("files/example.md", "opaquelocktoken:does-not-exist")
+
+  # Release the lock, after which writes need no token again
+  wd.unlock("files/example.md", lk.token)
+  wd.upload(filepath = "tests/example.md", destination = "files/example.md")
+
   # Delete
   wd.rm("example.md")
   wd.rm("files/example.md")

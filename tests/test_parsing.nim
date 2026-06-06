@@ -75,6 +75,33 @@ const proppatchMixedBody = """<?xml version="1.0" encoding="utf-8"?>
   </D:response>
 </D:multistatus>"""
 
+const lockBody = """<?xml version="1.0" encoding="utf-8"?>
+<D:prop xmlns:D="DAV:">
+  <D:lockdiscovery>
+    <D:activelock>
+      <D:locktype><D:write/></D:locktype>
+      <D:lockscope><D:exclusive/></D:lockscope>
+      <D:depth>infinity</D:depth>
+      <D:owner>tester</D:owner>
+      <D:timeout>Second-3600</D:timeout>
+      <D:locktoken>
+        <D:href>opaquelocktoken:8db16e4f-9f10-4487-af81-cdf77d3b3745</D:href>
+      </D:locktoken>
+      <D:lockroot>
+        <D:href>http://webdav/files/example.md</D:href>
+      </D:lockroot>
+    </D:activelock>
+  </D:lockdiscovery>
+</D:prop>"""
+
+const sharedLockBody = """<?xml version="1.0"?>
+<D:prop xmlns:D="DAV:"><D:lockdiscovery><D:activelock>
+  <D:lockscope><D:shared/></D:lockscope>
+  <D:locktype><D:write/></D:locktype>
+  <D:depth>0</D:depth>
+  <D:locktoken><D:href>opaquelocktoken:abc</D:href></D:locktoken>
+</D:activelock></D:lockdiscovery></D:prop>"""
+
 suite "parsePropfindList":
   test "extracts hrefs and their properties":
     let files = parsePropfindList(propfindListBody, "")
@@ -122,6 +149,28 @@ suite "parseProppatchResponse":
     check res.len == 2
     check res["Z:Authors"] == 424
     check res["Z:Copyright-Owner"] == 409
+
+suite "parseLockResponse":
+  test "extracts the lock token and metadata":
+    let lk = parseLockResponse(lockBody)
+    check lk.token == "opaquelocktoken:8db16e4f-9f10-4487-af81-cdf77d3b3745"
+    check lk.scope == EXCLUSIVE
+    check lk.depth == INF
+    check lk.owner == "tester"
+    check lk.timeout == "Second-3600"
+    check lk.root == "http://webdav/files/example.md"
+
+  test "handles a shared lock with depth zero":
+    let lk = parseLockResponse(sharedLockBody)
+    check lk.token == "opaquelocktoken:abc"
+    check lk.scope == SHARED
+    check lk.depth == ZERO
+
+suite "ifHeaders":
+  test "builds an If header only when a token is given":
+    check ifHeaders("").len == 0
+    check ifHeaders("opaquelocktoken:abc") ==
+      @[("If", "(<opaquelocktoken:abc>)")]
 
 suite "statusCode":
   test "extracts the numeric code from a status line":
